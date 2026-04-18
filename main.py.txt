@@ -8,25 +8,35 @@ from io import BytesIO
 
 app = FastAPI()
 
-# Guardamos aquí la relación orden -> guías
-orden_guias = {}
+# Memoria temporal:
+# clave = numero de orden
+# valor = lista de guías asociadas
+orden_a_guias: dict[str, list[str]] = {}
 
+# =========================================================
+# ENDPOINT 1: PROCESAR PDFs
+# - Extrae orden y guía
+# - Renombra PDFs
+# - Guarda la relación orden -> guías
+# =========================================================
 @app.post("/procesar_pdfs")
 async def procesar_pdfs(pdfs: list[UploadFile]):
-    orden_guias.clear()
+    orden_a_guias.clear()
     zip_buffer = BytesIO()
 
-    with zipfile.ZipFile(zip_buffer, "w") as zipf:
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
         for pdf in pdfs:
             texto = ""
-            with pdfplumber.open(pdf.file) as p:
-                for page in p.pages:
-                    if page.extract_text():
-                        texto += page.extract_text()
 
-            # guía (10 a 12 dígitos)
+            with pdfplumber.open(pdf.file) as pdf_file:
+                for page in pdf_file.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        texto += page_text
+
+            # Número de guía (10 a 12 dígitos)
             guia_match = re.search(r"\b\d{10,12}\b", texto)
-            # orden (9 a 11 dígitos)
+            # Número de orden (9 a 11 dígitos)
             orden_match = re.search(r"\b\d{9,11}\b", texto)
 
             if not guia_match or not orden_match:
@@ -35,47 +45,60 @@ async def procesar_pdfs(pdfs: list[UploadFile]):
             guia = guia_match.group()
             orden = orden_match.group()
 
-            orden_guias.setdefault(orden, []).append(guia)
+            # Guardar relación orden -> guías
+            if orden not in orden_a_guias:
+                orden_a_guias[orden] = []
+            orden_a_guias[orden].append(guia)
 
+            # Renombrar PDF
             nuevo_nombre = f"{orden}_{guia}.pdf"
+            pdf.file.seek(0)
             zipf.writestr(nuevo_nombre, pdf.file.read())
 
     zip_buffer.seek(0)
     return StreamingResponse(
         zip_buffer,
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=pdfs_renombrados.zip"}
+        headers={
+            "Content-Disposition": "attachment; filename=pdfs_renombrados.zip"
+        }
     )
 
-
+# =========================================================
+# ENDPOINT 2: PROCESAR EXCEL
+# - Lee hoja OFFLINE
+# - Usa columna D (orden)
+# - Duplica filas si hay varias guías
+# - Una guía por celda
+# =========================================================
 @app.post("/procesar_excel")
 async def procesar_excel(excel: UploadFile):
     df = pd.read_excel(excel.file, sheet_name="OFFLINE")
+    filas_resultado = []
 
-    filas_finales = []
+    for _, fila in df.iterrows():
+        orden = str(fila.iloc[3]).strip()  # Columna D
 
-    for _, row in df.iterrows():
-        orden = str(row[3]).strip()  # columna D
-
-
-if orden in orden_guias:
-    for guia in orden_guias[orden]:
-        nueva = row.copy()
-        nueva["Guia"] = guia
-        filas_finales.append(nueva)
-
+        if orden in orden_a_guias:
+            for guia in orden_a_guias[orden]:
+                nueva_fila = fila.copy()
+                nueva_fila["Guia transportadora"] = guia
+                filas_resultado.append(nueva_fila)
         else:
-            filas_finales.append(row)
+            filas_resultado.append(fila)
 
-    df_final = pd.DataFrame(filas_finales)
+    df_resultado = pd.DataFrame(filas_resultado)
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_final.to_excel(writer, index=False, sheet_name="OFFLINE")
+        df_resultado.to_excel(writer, index=False, sheet_name="OFFLINE")
 
     output.seek(0)
     return StreamingResponse(
         output,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=OFFLINE_COMPLETO.xlsx"}
+        headers={
+            "Content-Disposition": "attachment; filename=OFFLINE_COMPLETO.xlsx"
+        }
     )
+``
