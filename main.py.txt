@@ -8,17 +8,13 @@ from io import BytesIO
 
 app = FastAPI()
 
-# Memoria temporal:
-# clave = numero de orden
-# valor = lista de guías asociadas
-orden_a_guias: dict[str, list[str]] = {}
+# Diccionario en memoria:
+# { "orden": ["guia1", "guia2", ...] }
+orden_a_guias = {}
 
-# =========================================================
-# ENDPOINT 1: PROCESAR PDFs
-# - Extrae orden y guía
-# - Renombra PDFs
-# - Guarda la relación orden -> guías
-# =========================================================
+# ======================================================
+# 1) PROCESAR PDFs
+# ======================================================
 @app.post("/procesar_pdfs")
 async def procesar_pdfs(pdfs: list[UploadFile]):
     orden_a_guias.clear()
@@ -30,13 +26,11 @@ async def procesar_pdfs(pdfs: list[UploadFile]):
 
             with pdfplumber.open(pdf.file) as pdf_file:
                 for page in pdf_file.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        texto += page_text
+                    contenido = page.extract_text()
+                    if contenido:
+                        texto += contenido
 
-            # Número de guía (10 a 12 dígitos)
             guia_match = re.search(r"\b\d{10,12}\b", texto)
-            # Número de orden (9 a 11 dígitos)
             orden_match = re.search(r"\b\d{9,11}\b", texto)
 
             if not guia_match or not orden_match:
@@ -45,15 +39,12 @@ async def procesar_pdfs(pdfs: list[UploadFile]):
             guia = guia_match.group()
             orden = orden_match.group()
 
-            # Guardar relación orden -> guías
             if orden not in orden_a_guias:
                 orden_a_guias[orden] = []
             orden_a_guias[orden].append(guia)
 
-            # Renombrar PDF
-            nuevo_nombre = f"{orden}_{guia}.pdf"
             pdf.file.seek(0)
-            zipf.writestr(nuevo_nombre, pdf.file.read())
+            zipf.writestr(f"{orden}_{guia}.pdf", pdf.file.read())
 
     zip_buffer.seek(0)
     return StreamingResponse(
@@ -64,34 +55,30 @@ async def procesar_pdfs(pdfs: list[UploadFile]):
         }
     )
 
-# =========================================================
-# ENDPOINT 2: PROCESAR EXCEL
-# - Lee hoja OFFLINE
-# - Usa columna D (orden)
-# - Duplica filas si hay varias guías
-# - Una guía por celda
-# =========================================================
+# ======================================================
+# 2) PROCESAR EXCEL
+# ======================================================
 @app.post("/procesar_excel")
 async def procesar_excel(excel: UploadFile):
     df = pd.read_excel(excel.file, sheet_name="OFFLINE")
-    filas_resultado = []
+    filas_finales = []
 
     for _, fila in df.iterrows():
-        orden = str(fila.iloc[3]).strip()  # Columna D
+        orden = str(fila.iloc[3]).strip()  # columna D
 
         if orden in orden_a_guias:
             for guia in orden_a_guias[orden]:
                 nueva_fila = fila.copy()
                 nueva_fila["Guia transportadora"] = guia
-                filas_resultado.append(nueva_fila)
+                filas_finales.append(nueva_fila)
         else:
-            filas_resultado.append(fila)
+            filas_finales.append(fila)
 
-    df_resultado = pd.DataFrame(filas_resultado)
+    df_final = pd.DataFrame(filas_finales)
 
     output = BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df_resultado.to_excel(writer, index=False, sheet_name="OFFLINE")
+        df_final.to_excel(writer, index=False, sheet_name="OFFLINE")
 
     output.seek(0)
     return StreamingResponse(
@@ -101,4 +88,3 @@ async def procesar_excel(excel: UploadFile):
             "Content-Disposition": "attachment; filename=OFFLINE_COMPLETO.xlsx"
         }
     )
-``
