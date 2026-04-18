@@ -57,11 +57,13 @@ async def procesar_excel(excel: UploadFile):
     for _, row in df.iterrows():
         orden = str(row[3]).strip()  # columna D
 
-        if orden in orden_guias:
-            for guia in orden_guias[orden]:
-                nueva = row.copy()
-                nueva["Guia"] = guia
-                filas_finales.append(nueva)
+
+if orden in orden_guias:
+    for guia in orden_guias[orden]:
+        nueva = row.copy()
+        nueva["Guia"] = guia
+        filas_finales.append(nueva)
+
         else:
             filas_finales.append(row)
 
