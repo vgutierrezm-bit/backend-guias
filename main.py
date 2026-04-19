@@ -8,6 +8,10 @@ from io import BytesIO
 
 app = FastAPI()
 
+@app.get("/")
+def raiz():
+    return {"status": "ok"}
+
 # Estructura en memoria:
 # {
 #   "numero_orden": ["guia1", "guia2", ...]
